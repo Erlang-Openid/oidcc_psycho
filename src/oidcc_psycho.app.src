@@ -1,0 +1,14 @@
+{application,
+ oidcc_psycho, [
+         {description, "OpenId Connect psycho application"},
+         {vsn, "0.1.0"},
+         {modules, []},
+         {registered, []},
+         {applications, [
+                        oidcc,
+                        psycho
+                        ]},
+         {maintainers, ["Bas Wegh"]},
+         {licenses, ["Apache 2.0"]},
+         {links, [{"GitHub","https://github.com/indigo-dc/oidcc_psycho"}]}
+        ]}.
