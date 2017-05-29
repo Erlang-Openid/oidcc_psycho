@@ -5,7 +5,7 @@
          oidcc_app/0]
        ).
 
--define(COOKIE, <<"oidcc_session">>).
+-define(COOKIE, "oidcc_session").
 
 oidcc(_NextApp) ->
     ok.
@@ -15,8 +15,8 @@ oidcc_app() ->
 
 
 perform_oidcc(Env0) ->
-    { {_, _, QsList} , Env1} = psycho_utils:ensure_parsed_request_path(Env0),
-    {_, Env} = psycho_utils:ensure_parsed_cookie(Env1),
+    { {_, _, QsList} , Env1} = psycho_util:ensure_parsed_request_path(Env0),
+    {_, Env} = psycho_util:ensure_parsed_cookie(Env1),
     Provider = validate_provider(proplists:get_value("provider", QsList)),
     login_or_redirect(Provider, Env).
 
@@ -28,7 +28,7 @@ login_or_redirect(ProviderId, Env) ->
 
 
 perform_oidcc_login(Env) ->
-    {_, _, QsList} = psycho:env(parsed_request, Env),
+    {_, _, QsList} = psycho:env(parsed_request_path, Env),
     SessionId = try_binary(proplists:get_value("state", QsList)),
     handle_oidc_session(oidcc_session_mgr:get_session(SessionId), Env).
 
@@ -38,8 +38,10 @@ redirect_to_provider(bad_provider, Env) ->
 redirect_to_provider(ProviderId, Env) ->
     {ok, Session} = oidcc_session_mgr:new_session(ProviderId),
     CookieDefault = application:get_env(oidcc, use_cookie, false),
-    {_, _, QsList} = psycho:env(parsed_request, Env),
-    ReqUseCookie = try_binary(proplists:get_value("use_cookie", QsList, false)),
+    {_, _, QsList} = psycho:env(parsed_request_path, Env),
+    ReqUseCookie = bool(proplists:get_value("use_cookie", QsList), false),
+    ClientModId = try_binary(proplists:get_value("client_mod",
+                                                 QsList, undefined)),
     UseCookie = ReqUseCookie or CookieDefault,
     UserAgent = try_binary(psycho:env_header("user-agent", Env)),
     ok = oidcc_session:set_user_agent(UserAgent, Session),
@@ -49,8 +51,7 @@ redirect_to_provider(ProviderId, Env) ->
     CookieUpdate = cookie_update_if_requested(UseCookie, Session),
     Redirect = {redirect, Url},
     Updates = [CookieUpdate, Redirect],
-    {ok, Req2} = apply_updates(Updates, Req),
-    {ok, Req2, State}.
+    apply_updates(Updates, Env).
 
 
 handle_oidc_session({ok, Session}, Env) ->
@@ -64,7 +65,7 @@ handle_oidc_session({error, Reason}, Env) ->
 
 login_or_error(undefined, Env) ->
     Session = psycho:env(oidc_session, Env),
-    {_, _, QsList} = psycho:env(parsed_request, Env),
+    {_, _, QsList} = psycho:env(parsed_request_path, Env),
     AuthCode = try_binary(proplists:get_value("code", QsList)),
     UserAgent = try_binary(psycho:env_header("user-agent", Env)),
     Cookies = psycho:env(parsed_cookie, Env),
@@ -93,7 +94,7 @@ handle_token_validation({ok, Token}, true, true, Env) ->
     ClientModId = default,
     ok = oidcc_session:close(Session),
     {ok, UpdateList} = oidcc_client:succeeded(Token, ClientModId),
-    apply_updates(UpdateList, [{oidc_response_header, []} | Env ]);
+    apply_updates([ clear_cookie() | UpdateList], Env);
 handle_token_validation({ok, _}, false, _, Env) ->
     UserAgent = try_binary(psycho:env_header("user-agent", Env)),
     handle_fail(bad_user_agent, UserAgent, Env);
@@ -108,7 +109,7 @@ handle_token_validation(TokenError, _, _, Env) ->
 handle_fail(Error, Description, Env) ->
     ClientModId = default,
     {ok, UpdateList} = oidcc_client:failed(Error, Description, ClientModId),
-    apply_updates(UpdateList, [{oidc_response_header, []} | Env ]).
+    apply_updates([ clear_cookie() | UpdateList], Env).
 
 validate_provider(undefined) ->
     undefined;
@@ -136,15 +137,45 @@ try_binary(List) when is_list(List)  ->
 try_binary(Other) ->
     Other.
 
+bool("false", _) ->
+    false;
+bool("true", _) ->
+    true;
+bool(_, Default) ->
+    Default.
+
+
+
 apply_updates([], Env) ->
     {ok, Env};
 apply_updates([{redirect, Url}], Env) ->
-    Header = psycho:env(oidc_response_header, Env),
-    {{302, ""}, [{"Location", Url} | Header], ""};
+    Header = psycho:env(oidc_response_header, Env, []),
+    {{302, "Other Location"}, [{"Location", Url} | Header], ""};
 apply_updates([{cookie, Name, Data, Options} | T], Env) ->
-    HeaderList = psycho:env(oidc_response_header, Env),
-    Header = psycho_utils:cookie_header(Name, Data, Options),
+    HeaderList = psycho:env(oidc_response_header, Env, []),
+    Header = psycho_util:cookie_header(Name, Data, Options),
     Result = [ Header | HeaderList ],
-    apply_updates(T, psycho:set_env({oidc_response_header, Result}, Env));
+    apply_updates(T, [ {oidc_response_header, Result} | Env ]);
 apply_updates([{none} | T], Req) ->
     apply_updates(T, Req).
+
+
+clear_cookie() ->
+    {cookie, ?COOKIE, "deleted", cookie_opts(0)}.
+
+cookie_update_if_requested(true, Session) ->
+    CookieData =  base64url:encode(crypto:strong_rand_bytes(32)),
+    ok = oidcc_session:set_cookie_data(CookieData, Session),
+    MaxAge = application:get_env(oidcc, session_max_age, 180),
+    {cookie, ?COOKIE, CookieData, cookie_opts(MaxAge)};
+cookie_update_if_requested(_, _) ->
+    {none}.
+
+cookie_opts(MaxAge) ->
+    BasicOpts = [ {http_only, true}, {max_age, MaxAge}, {path, <<"/">>}],
+    add_secure(application:get_env(oidcc, secure_cookie, false), BasicOpts).
+
+add_secure(true, BasicOpts) ->
+    [{secure, true} | BasicOpts];
+add_secure(_, BasicOpts) ->
+    BasicOpts.
