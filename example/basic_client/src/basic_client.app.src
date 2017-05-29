@@ -1,0 +1,14 @@
+{application,
+ basic_client, [
+         {description, "an example"},
+         {vsn, "git"},
+         {id, "git"},
+         {modules, []},
+         {registered, []},
+         {applications, [
+                         oidcc_psycho,
+			 psycho,
+			 eper
+                        ]},
+         {mod, {basic_client_app, []}}
+        ]}.
