@@ -88,12 +88,14 @@ login_or_error(Error, Env) ->
     handle_fail(oidc_provider_error, Error, Env).
 
 
-handle_token_validation({ok, Token}, true, true, Env) ->
-    %% {ok, VerifiedToken} = add_configured_info(Token, Provider, Cookies),
+handle_token_validation({ok, Token0}, true, true, Env) ->
     Session = psycho:env(oidc_session, Env),
-    ClientModId = default,
+    {ok, ModId} = oidcc_session:get_client_mod(Session),
+    {ok, Provider} = oidcc_session:get_provider(Session),
+    {ok, Token} = add_configured_info(Token0, Provider),
     ok = oidcc_session:close(Session),
-    {ok, UpdateList} = oidcc_client:succeeded(Token, ClientModId),
+    EnvMap = #{env =>  Env },
+    {ok, UpdateList} = oidcc_client:succeeded(Token, ModId, EnvMap),
     apply_updates([ clear_cookie() | UpdateList], Env);
 handle_token_validation({ok, _}, false, _, Env) ->
     UserAgent = try_binary(psycho:env_header("user-agent", Env)),
@@ -107,8 +109,10 @@ handle_token_validation(TokenError, _, _, Env) ->
 
 
 handle_fail(Error, Description, Env) ->
-    ClientModId = default,
-    {ok, UpdateList} = oidcc_client:failed(Error, Description, ClientModId),
+    Session = psycho:env(oidc_session, Env),
+    {ok, ModId} = oidcc_session:get_client_mod(Session),
+    EnvMap = #{env => Env},
+    {ok, UpdateList} = oidcc_client:failed(Error, Description, ModId, EnvMap),
     apply_updates([ clear_cookie() | UpdateList], Env).
 
 validate_provider(undefined) ->
@@ -144,10 +148,28 @@ bool("true", _) ->
 bool(_, Default) ->
     Default.
 
+add_configured_info(Token, Provider) ->
+    GetUserInfo = application:get_env(oidcc, retrieve_userinfo, false),
+    add_info_to_token(GetUserInfo, Token, Provider).
+
+add_info_to_token(false, Token, _Provider) ->
+    {ok, Token};
+add_info_to_token(true, Token, Provider) ->
+    Result = oidcc:retrieve_user_info(Token, Provider),
+    {ok, NewToken} = insert_userinfo_in_token(Result, Token),
+    add_info_to_token(false, NewToken, Provider).
+
+insert_userinfo_in_token({ok, UserInfo}, Token) ->
+    {ok, maps:put(user_info, UserInfo, Token)};
+insert_userinfo_in_token( _, Token) ->
+    {ok, maps:put(user_info, #{}, Token)}.
+
 
 
 apply_updates([], Env) ->
     {ok, Env};
+apply_updates([{raw, Response}], _Env) ->
+    Response;
 apply_updates([{redirect, Url}], Env) ->
     Header = psycho:env(oidc_response_header, Env, []),
     {{302, "Other Location"}, [{"Location", Url} | Header], ""};
